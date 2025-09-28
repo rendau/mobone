@@ -1,0 +1,6 @@
+*.log
+*.tar
+*.tar.gz
+*.tar.bz2
+.idea
+.pgpass
