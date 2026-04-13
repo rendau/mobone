@@ -48,6 +48,10 @@ type WithGetInterceptorI interface {
 	GetInterceptor(qb squirrel.SelectBuilder) squirrel.SelectBuilder
 }
 
+type connectionGetterI interface {
+	GetConnection(ctx context.Context) ConnectionI
+}
+
 type ListParams struct {
 	Conditions           map[string]any
 	ConditionExpressions map[string][]any
@@ -62,12 +66,23 @@ type ListParams struct {
 }
 
 type ModelStore struct {
-	Con       *pgxpool.Pool
-	QB        squirrel.StatementBuilderType
-	TableName string
+	Con                *pgxpool.Pool
+	TransactionManager connectionGetterI
+	QB                 squirrel.StatementBuilderType
+	TableName          string
+}
+
+func (s *ModelStore) GetConnection(ctx context.Context) ConnectionI {
+	if s.TransactionManager != nil {
+		return s.TransactionManager.GetConnection(ctx)
+	}
+
+	return s.Con
 }
 
 func (s *ModelStore) Create(ctx context.Context, m CreateModelI) error {
+	con := s.GetConnection(ctx)
+
 	queryBuilder := s.QB.Insert(s.TableName).
 		SetMap(m.CreateColumnMap())
 
@@ -89,12 +104,12 @@ func (s *ModelStore) Create(ctx context.Context, m CreateModelI) error {
 	}
 
 	if len(returningColumnNames) > 0 {
-		err = s.Con.QueryRow(ctx, query, args...).Scan(returningFieldPointers...)
+		err = con.QueryRow(ctx, query, args...).Scan(returningFieldPointers...)
 		if err != nil {
 			return fmt.Errorf("fail to query: %w", err)
 		}
 	} else {
-		_, err = s.Con.Exec(ctx, query, args...)
+		_, err = con.Exec(ctx, query, args...)
 		if err != nil {
 			return fmt.Errorf("fail to exec: %w", err)
 		}
@@ -104,6 +119,8 @@ func (s *ModelStore) Create(ctx context.Context, m CreateModelI) error {
 }
 
 func (s *ModelStore) Update(ctx context.Context, m UpdateModelI) error {
+	con := s.GetConnection(ctx)
+
 	queryBuilder := s.QB.Update(s.TableName).
 		SetMap(m.UpdateColumnMap())
 
@@ -118,7 +135,7 @@ func (s *ModelStore) Update(ctx context.Context, m UpdateModelI) error {
 
 	// fmt.Println(query, args)
 
-	_, err = s.Con.Exec(ctx, query, args...)
+	_, err = con.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("fail to exec: %w", err)
 	}
@@ -127,6 +144,8 @@ func (s *ModelStore) Update(ctx context.Context, m UpdateModelI) error {
 }
 
 func (s *ModelStore) UpdateOrCreate(ctx context.Context, m UpdateCreateModelI) error {
+	con := s.GetConnection(ctx)
+
 	pkColumnMap := m.PKColumnMap()
 	pkColumnNames := make([]string, 0, len(pkColumnMap))
 	for k := range pkColumnMap {
@@ -150,7 +169,7 @@ func (s *ModelStore) UpdateOrCreate(ctx context.Context, m UpdateCreateModelI) e
 		return fmt.Errorf("fail to build query: %w", err)
 	}
 
-	_, err = s.Con.Exec(ctx, query, args...)
+	_, err = con.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("fail to exec: %w", err)
 	}
@@ -159,6 +178,8 @@ func (s *ModelStore) UpdateOrCreate(ctx context.Context, m UpdateCreateModelI) e
 }
 
 func (s *ModelStore) CreateIfNotExist(ctx context.Context, m UpdateCreateModelI) error {
+	con := s.GetConnection(ctx)
+
 	pkColumnMap := m.PKColumnMap()
 	pkColumnNames := make([]string, 0, len(pkColumnMap))
 	for k := range pkColumnMap {
@@ -179,7 +200,7 @@ func (s *ModelStore) CreateIfNotExist(ctx context.Context, m UpdateCreateModelI)
 		return fmt.Errorf("fail to build query: %w", err)
 	}
 
-	_, err = s.Con.Exec(ctx, query, args...)
+	_, err = con.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("fail to exec: %w", err)
 	}
@@ -188,6 +209,8 @@ func (s *ModelStore) CreateIfNotExist(ctx context.Context, m UpdateCreateModelI)
 }
 
 func (s *ModelStore) Delete(ctx context.Context, m DeleteModelI) error {
+	con := s.GetConnection(ctx)
+
 	queryBuilder := s.QB.Delete(s.TableName)
 
 	for k, v := range m.PKColumnMap() {
@@ -199,7 +222,7 @@ func (s *ModelStore) Delete(ctx context.Context, m DeleteModelI) error {
 		return fmt.Errorf("fail to build query: %w", err)
 	}
 
-	_, err = s.Con.Exec(ctx, query, args...)
+	_, err = con.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("fail to exec: %w", err)
 	}
@@ -208,6 +231,8 @@ func (s *ModelStore) Delete(ctx context.Context, m DeleteModelI) error {
 }
 
 func (s *ModelStore) List(ctx context.Context, params ListParams, itemConstructor func(add bool) ListModelI) (int64, error) {
+	con := s.GetConnection(ctx)
+
 	queryBuilder := s.QB.Select().From(s.TableName)
 
 	// conditions
@@ -260,7 +285,7 @@ func (s *ModelStore) List(ctx context.Context, params ListParams, itemConstructo
 			return 0, fmt.Errorf("fail to build query: %w", err)
 		}
 
-		err = s.Con.QueryRow(ctx, query, args...).Scan(&totalCount)
+		err = con.QueryRow(ctx, query, args...).Scan(&totalCount)
 		if err != nil {
 			return 0, fmt.Errorf("fail to query: %w", err)
 		}
@@ -302,7 +327,7 @@ func (s *ModelStore) List(ctx context.Context, params ListParams, itemConstructo
 	// slog.Info("List query", "query", query, "args", args)
 
 	// execute query
-	rows, err := s.Con.Query(ctx, query, args...)
+	rows, err := con.Query(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("fail to query: %w", err)
 	}
@@ -324,6 +349,8 @@ func (s *ModelStore) List(ctx context.Context, params ListParams, itemConstructo
 }
 
 func (s *ModelStore) Get(ctx context.Context, m GetModelI) (bool, error) {
+	con := s.GetConnection(ctx)
+
 	colMap := m.ListColumnMap()
 	colNames := make([]string, 0, len(colMap))
 	colFieldPointers := make([]any, 0, len(colMap))
@@ -353,7 +380,7 @@ func (s *ModelStore) Get(ctx context.Context, m GetModelI) (bool, error) {
 		return false, fmt.Errorf("fail to build query: %w", err)
 	}
 
-	err = s.Con.QueryRow(ctx, query, args...).Scan(colFieldPointers...)
+	err = con.QueryRow(ctx, query, args...).Scan(colFieldPointers...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil

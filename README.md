@@ -1,177 +1,415 @@
-# Mobone
-### Пакет для работы с базой PostgreSQL
+# mobone — минималистичный слой для работы с PostgreSQL через pgx и Squirrel
 
-Пакет получает структуру через которую можно создавать, обновлять или удалять записи в базе
-Для структур предусмотрены следующие интерфейсы:
-- ListModelI для поиска товаров (ListColumnMap какие поля вернуть, DefaultSortColumns сортировка)
-- GetModelI для получения одного товара (ListColumnMap какие поля вернуть, PKColumnMap primary поля, по ним идет поиск)
-- CreateModelI для создания записи (CreateColumnMap какие поля записать в базу, ReturningColumnMap какие поля должны вернуться)
-- UpdateModelI для обновления записи (UpdateColumnMap, какие поля обновить, PKColumnMap primary поля по которым будет поиск)
+mobone упрощает CRUD-операции и списочные выборки для моделей на Go, используя:
+- pgx/pgxpool как драйвер PostgreSQL
+- Masterminds/squirrel как билдер SQL с плейсхолдерами
+- Простые интерфейсы моделей для маппинга колонок и значений
 
-Для работы необходимо создать нужные структуры по этим интерфейсам
+Подходит для приложений, где нужно быстро собрать надежный слой доступа к данным с минимальным шаблонным кодом.
 
-## Примеры структур
-### для ListModelI и GetModelI
-```go
-package model
+- Мин. Требования: Go 1.24, pgx v5, squirrel.
+- Рекомендуется использовать формат плейсхолдеров Dollar для PostgreSQL: StatementBuilder.PlaceholderFormat(squirrel.Dollar)
 
-import "time"
+## Установка
 
-type Select struct {
-	Id        int
-	Name      string
-	Test      bool
-	Json      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
+```shell script
+go get github.com/rendau/mobone/v2
+```
 
-func (m *Select) ListColumnMap() map[string]any {
-	return map[string]any{
-		"id":         &m.Id,
-		"name":       &m.Name,
-		"test":       &m.Test,
-		"json":       &m.Json,
-		"created_at": &m.CreatedAt,
-		"updated_at": &m.UpdatedAt,
-	}
-}
 
-func (m *Select) PKColumnMap() map[string]any {
-	return map[string]any{
-		"id": m.Id,
-	}
-}
+## Быстрый старт
 
-func (m *Select) DefaultSortColumns() []string {
-	return []string{"id"}
+### Инициализация хранилища
+
+```textmate
+// Go
+import (
+  "context"
+
+  "github.com/Masterminds/squirrel"
+  "github.com/jackc/pgx/v5/pgxpool"
+  "github.com/rendau/mobone/v2"
+)
+
+func NewStore(pool *pgxpool.Pool) mobone.ModelStore {
+  qb := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar)
+  return mobone.ModelStore{
+    Con:       pool,
+    QB:        qb,
+    TableName: "your_table",
+  }
 }
 ```
 
-### для CreateModelI и UpdateModelI
-```go
-package model
 
-import "time"
+### Интерфейсы моделей
 
-type Upsert struct {
-	Id        int
-	Name      string
-	Test      bool
-	Json      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+mobone работает не с структурами напрямую, а с интерфейсами, которые возвращают:
+- карту колонок => адрес полей для Scan (ListModelI, GetModelI)
+- карту значений для INSERT/UPDATE (CreateModelI, UpdateModelI)
+- карту PK-условий (GetModelI, UpdateModelI, DeleteModelI)
+- опционально возвращаемые поля (CreateModelI.ReturningColumnMap)
+- опциональные перехватчики запросов (WithListInterceptorI, WithGetInterceptorI)
+
+Ключи карт — имена колонок/выражений в SQL, значения — либо конкретные значения (для SetMap/Where), либо указатели на поля (для Scan).
+
+## Интерфейсы
+
+- TransactionManagerI
+    - GetConnection(ctx) ConnectionI
+    - TxFn(ctx, func(ctx) error) error — оборачивает функцию в транзакцию
+
+- ConnectionI
+    - Exec(ctx, sql, args...) (pgconn.CommandTag, error)
+    - Query(ctx, sql, args...) (pgx.Rows, error)
+    - QueryRow(ctx, sql, args...) pgx.Row
+
+- ListModelI
+    - ListColumnMap() map[string]any — колонки для Select/Scan
+    - DefaultSortColumns() []string — сортировка по умолчанию
+
+- GetModelI
+    - ListColumnMap()
+    - PKColumnMap() map[string]any — условия по PK
+
+- CreateModelI
+    - CreateColumnMap() map[string]any — значения для INSERT
+    - ReturningColumnMap() map[string]any — поля для RETURNING
+
+- UpdateModelI
+    - UpdateColumnMap() map[string]any — значения для UPDATE
+    - PKColumnMap()
+
+- UpdateCreateModelI
+    - объединяет UpdateModelI + CreateModelI (для upsert/insert-if-not-exists)
+
+- DeleteModelI
+    - PKColumnMap()
+
+- WithListInterceptorI
+    - ListInterceptor(qb, params) — тонкая настройка SELECT
+
+- WithGetInterceptorI
+    - GetInterceptor(qb)
+
+## ModelStore: операции
+
+- Create(ctx, m CreateModelI) error
+- Update(ctx, m UpdateModelI) error
+- UpdateOrCreate(ctx, m UpdateCreateModelI) error — ON CONFLICT DO UPDATE
+- CreateIfNotExist(ctx, m UpdateCreateModelI) error — ON CONFLICT DO NOTHING
+- Delete(ctx, m DeleteModelI) error
+- Get(ctx, m GetModelI) (found bool, err error)
+- List(ctx, params ListParams, itemConstructor func(add bool) ListModelI) (totalCount int64, err error)
+
+ListParams:
+- Conditions map[string]any — простые условия Where(map)
+- ConditionExpressions map[string][]any — выражения Where("a = ? and b > ?", args...)
+- Distinct bool
+- Columns []string — какие колонки вернуть (по умолчанию — все из ListColumnMap)
+- Page, PageSize int64 — пагинация (Offset = Page*PageSize)
+- WithTotalCount bool — вместе с данными вернуть count
+- OnlyCount bool — вернуть только count (без данных)
+- Sort []string — список ORDER BY (если пусто — берется DefaultSortColumns)
+- CustomConditions map[string]string — для ваших кастомизаций (используйте в перехватчиках)
+
+## Транзакции
+
+TransactionManager прокидывает pgx.Tx через context, чтобы ModelStore автоматически использовал один и тот же ConnectionI (tx вместо пула) внутри TxFn.
+
+```textmate
+// Go
+txM := mobone.NewTransactionManager(pool)
+
+store := mobone.ModelStore{
+  Con:                pool,
+  TransactionManager: txM,
+  QB:                 squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar),
+  TableName:          "your_table",
 }
 
-func (m *Upsert) CreateColumnMap() map[string]any {
-	result := make(map[string]any, 5)
-
-	result["name"] = m.Name
-	result["test"] = m.Test
-	result["json"] = m.Json
-	result["created_at"] = m.CreatedAt
-	result["updated_at"] = m.UpdatedAt
-
-	return result
-}
-
-func (m *Upsert) UpdateColumnMap() map[string]any {
-	return m.CreateColumnMap()
-}
-
-func (m *Upsert) ReturningColumnMap() map[string]any {
-	return nil
-}
-
-func (m *Upsert) PKColumnMap() map[string]any {
-	return map[string]any{
-		"id": m.Id,
-	}
-}
-```
-
-## Примеры по использованию методов Mobone
-### Получение одного элемента
-```go
-m := &model.Select{
-    Id: 1,
-}
-
-modelStore := mobone.ModelStore{pgxPool, queryBuilder, "tableName"}
-
-found, err := modelStore.Get(context.Background(), m)
-```
-после запроса в поля Select будут внесены записи в соответствии с ListColumnMap()
-
-### Получение списка
-```go
-conditions := map[string]any{
-    "Name": "Test Model",
-}
-conditionExps := map[string][]any{}
-
-items := make([]*model.Select, 0)
-
-modelStore := mobone.ModelStore{pgxPool, queryBuilder, "tableName"}
-
-totalCount, err := modelStore.List(context.Background(), mobone.ListParams{
-    Conditions:           conditions,
-    ConditionExpressions: conditionExps,
-    Page:                 0,
-    PageSize:             5,
-    WithTotalCount:       false,
-    OnlyCount:            false,
-    Sort:                 []string{"id"},
-}, func(add bool) mobone.ListModelI {
-    item := &model.Select{}
-    if add {
-        items = append(items, item)
-    }
-    return item
+err := txM.TxFn(context.Background(), func(ctx context.Context) error {
+  // все вызовы store внутри будут на одной транзакции
+  // например: return store.Update(ctx, updateModel)
+  return nil
 })
 ```
-после запроса в поля Select будут внесены записи в соответствии с ListColumnMap()
-* Page начинается с 0
 
-### Создание записи
-```go
-upsertModel := &model.Upsert{
-    Name:      "Test Model",
-    Test:      true,
-    Json:      `{"test": true}`,
-    CreatedAt: time.Now(),
-    UpdatedAt: time.Now(),
+
+## Пример модели
+
+```textmate
+// Go
+type Contact struct {
+  Phone string
+  Email string
 }
 
-modelStore := mobone.ModelStore{pgxPool, queryBuilder, "tableName"}
-
-err := modelStore.Create(context.Background(), upsertModel)
-```
-после записи в базу в Upsert вернутся поля указанные в его ReturningColumnMap()
-
-### Обновление записи
-```go
-upsertModel := &model.Upsert{
-    Id:   1,
-    Name: "Test Model",
-    Test: false,
-    Json: `{"test": false}`,
+type ContactEdit struct {
+  Phone *string
+  Email *string
 }
 
-modelStore := mobone.ModelStore{pgxPool, queryBuilder, "tableName"}
-
-err := modelStore.Update(context.Background(), upsertModel)
-```
-Для обновления, поиск записи производится по полям указанным в PKColumnMap()
-
-### Удаление записи
-```go
-modelStore := mobone.ModelStore{pgxPool, queryBuilder, "tableName"}
-
-deleteModel := &model.Upsert{
-    Id: 1,
+type Item struct {
+  Id        int
+  Name      string
+  Flag      bool
+  Contact   Contact
+  CreatedAt time.Time
+  UpdatedAt time.Time
 }
 
-err := modelStore.Delete(context.Background(), deleteModel)
+// Для списков/получения
+func (m *Item) ListColumnMap() map[string]any {
+  return map[string]any{
+    "id":         &m.Id,
+    "name":       &m.Name,
+    "flag":       &m.Flag,
+    "contact":    &m.Contact,
+    "created_at": &m.CreatedAt,
+    "updated_at": &m.UpdatedAt,
+  }
+}
+
+func (m *Item) PKColumnMap() map[string]any {
+  return map[string]any{"id": m.Id}
+}
+
+func (m *Item) DefaultSortColumns() []string { return []string{"id"} }
+
+// Для создания/обновления
+type ItemUpsert struct {
+  PKId      int
+  Name      *string
+  Flag      *bool
+  Contact   *ContactEdit
+  UpdatedAt *time.Time
+}
+
+func (u *ItemUpsert) CreateColumnMap() map[string]any {
+  res := map[string]any{}
+  if u.Name != nil { res["name"] = *u.Name }
+  if u.Flag != nil { res["flag"] = *u.Flag }
+  if u.Contact != nil { res["contact"] = u.Contact }
+  if u.UpdatedAt != nil { res["updated_at"] = *u.UpdatedAt }
+  return res
+}
+
+func (u *ItemUpsert) UpdateColumnMap() map[string]any {
+  res := u.CreateColumnMap()
+  // не обновляем PK-колонки
+  delete(res, "id")
+  // пример частичного merge jsonb (через squirrel.Expr)
+  if v, ok := res["contact"]; ok {
+    res["contact"] = squirrel.Expr("contact || ?", v)
+  }
+  return res
+}
+
+func (u *ItemUpsert) ReturningColumnMap() map[string]any {
+  return map[string]any{"id": &u.PKId}
+}
+
+func (u *ItemUpsert) PKColumnMap() map[string]any {
+  return map[string]any{"id": u.PKId}
+}
 ```
-Для удаления, поиск записи производится по полям указанным в PKColumnMap()
+
+
+## Примеры операций
+
+### Create
+
+```textmate
+// Go
+store := mobone.ModelStore{Con: pool, QB: qb, TableName: "items"}
+
+name := "Test"
+flag := true
+create := &ItemUpsert{
+  Name: &name,
+  Flag: &flag,
+}
+err := store.Create(ctx, create)
+if err != nil { /* handle */ }
+id := create.PKId
+```
+
+
+### Get
+
+```textmate
+// Go
+item := &Item{Id: id}
+found, err := store.Get(ctx, item)
+if err != nil { /* handle */ }
+if !found { /* not found */ }
+// item заполнен из БД
+```
+
+
+### Update
+
+```textmate
+// Go
+newName := "Updated"
+now := time.Now()
+upd := &ItemUpsert{
+  PKId:      id,
+  Name:      &newName,
+  UpdatedAt: &now,
+}
+err := store.Update(ctx, upd)
+```
+
+
+### Delete
+
+```textmate
+// Go
+err := store.Delete(ctx, &ItemUpsert{PKId: id})
+```
+
+
+### List с пагинацией и сортировкой
+
+```textmate
+// Go
+var items []*Item
+total, err := store.List(ctx, mobone.ListParams{
+  Page:       0,
+  PageSize:   20,
+  Sort:       []string{"id desc"},
+  WithTotalCount: true,
+}, func(add bool) mobone.ListModelI {
+  it := &Item{}
+  if add { items = append(items, it) }
+  return it
+})
+// items заполнен, total содержит количество (если WithTotalCount)
+```
+
+
+### List с ограниченным набором колонок
+
+```textmate
+// Go
+var items []*Item
+_, err := store.List(ctx, mobone.ListParams{
+  Columns: []string{"id", "name"}, // берутся только разрешенные в ListColumnMap()
+  PageSize: 50,
+}, func(add bool) mobone.ListModelI {
+  it := &Item{}
+  if add { items = append(items, it) }
+  return it
+})
+```
+
+
+### Только подсчет (без данных)
+
+```textmate
+// Go
+count, err := store.List(ctx, mobone.ListParams{
+  OnlyCount: true,
+}, func(add bool) mobone.ListModelI {
+  return &Item{}
+})
+```
+
+
+### Условия
+
+```textmate
+// Go
+// Простой Where через карту (эквивалент field = value)
+params := mobone.ListParams{
+  Conditions: map[string]any{
+    "flag": true,
+  },
+}
+
+// Произвольные выражения с плейсхолдерами
+params.ConditionExpressions = map[string][]any{
+  "name ilike ?": {"%test%"},
+}
+```
+
+
+### Interceptor для списков
+
+```textmate
+// Go
+type ItemList struct{ Item }
+
+func (m *ItemList) ListInterceptor(qb squirrel.SelectBuilder, params mobone.ListParams) squirrel.SelectBuilder {
+  // например, форсируем join при определенных колонках
+  if len(params.Columns) == 1 && params.Columns[0] == "id" {
+    qb = qb.CrossJoin("(select 1) as s")
+  }
+  return qb
+}
+```
+
+
+## Upsert и Insert-if-not-exists
+
+```textmate
+// Go
+// ON CONFLICT (id) DO UPDATE SET ...
+err := store.UpdateOrCreate(ctx, &ItemUpsert{
+  PKId: id,
+  Name: &newName,
+})
+
+// ON CONFLICT (id) DO NOTHING
+err := store.CreateIfNotExist(ctx, &ItemUpsert{
+  PKId: id,
+  Name: &newName,
+})
+```
+
+
+## Утилиты сортировки
+
+Пакет tools содержит функцию для безопасной сборки ORDER BY из whitelisted полей.
+
+```textmate
+// Go
+import "github.com/rendau/mobone/v2/tools"
+
+allowed := map[string]string{
+  "name": "user_name",
+  "age":  "user_age",
+}
+
+order := tools.ConstructSortColumns(allowed, []string{"-name", "age"})
+// -> []string{"user_name desc", "user_age"}
+
+// Используйте в ListParams.Sort:
+params.Sort = order
+```
+
+
+Особенности:
+- Игнорирует неразрешенные поля
+- Поддерживает префикс "-" для DESC
+- Возвращает nil, если итог пуст (удобно для проверки)
+
+## Рекомендации
+
+- Всегда используйте PlaceholderFormat(squirrel.Dollar) с PostgreSQL.
+- В ReturningColumnMap возвращайте указатели на поля вашей структуры.
+- В List используйте itemConstructor(add bool): добавляйте элемент в коллекцию только когда add == true (когда фактически прочитана строка).
+- Для JSONB-merge применяйте squirrel.Expr в UpdateColumnMap.
+
+## Обработка ошибок
+
+mobone возвращает ошибки с оберткой контекста:
+- "fail to build query"
+- "fail to query"
+- "fail to exec"
+- "transaction function"
+- "transaction commit"
+
+Используйте errors.Is для проверки pgx.ErrNoRows в Get.

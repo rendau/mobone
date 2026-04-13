@@ -474,3 +474,106 @@ func TestJsonMerge(t *testing.T) {
 	dbItem.UpdatedAt = time.Time{}
 	require.Equal(t, item, dbItem)
 }
+
+func TestTransaction(t *testing.T) {
+	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
+	require.NoError(t, err)
+
+	bgCtx := context.Background()
+
+	txM := mobone.NewTransactionManager(dbCon.pool)
+
+	modelStore := mobone.ModelStore{
+		Con:                dbCon.pool,
+		TransactionManager: txM,
+		QB:                 queryBuilder,
+		TableName:          tableName,
+	}
+
+	item := &model.Select{
+		Name: "Test Model",
+		Flag: true,
+		Contact: model.Contact{
+			Phone: "123456789",
+			Email: "test@example.com",
+		},
+	}
+
+	createModel := &model.Upsert{
+		Name: &item.Name,
+		Flag: &item.Flag,
+		Contact: &model.ContactEdit{
+			Phone: &item.Contact.Phone,
+			Email: &item.Contact.Email,
+		},
+	}
+	err = modelStore.Create(bgCtx, createModel)
+	require.NoError(t, err)
+	item.Id = createModel.PKId
+
+	item.UpdatedAt = time.Now().Add(-time.Hour)
+	item.Name = "Test Model changed"
+	item.Flag = false
+	item.Contact.Phone = "987654321"
+	item.Contact.Email = "changed@example.com"
+
+	updateModel := &model.Upsert{
+		PKId:      item.Id,
+		UpdatedAt: &item.UpdatedAt,
+		Name:      &item.Name,
+		Flag:      &item.Flag,
+		Contact: &model.ContactEdit{
+			Phone: &item.Contact.Phone,
+			Email: &item.Contact.Email,
+		},
+	}
+	txFnErr := txM.TxFn(bgCtx, func(ctx context.Context) error {
+		return modelStore.Update(ctx, updateModel)
+	})
+	require.NoError(t, txFnErr)
+	require.Greater(t, updateModel.PKId, 0)
+	item.Id = updateModel.PKId
+
+	dbItem := &model.Select{Id: item.Id}
+	found, err := modelStore.Get(bgCtx, dbItem)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.WithinDuration(t, time.Now(), dbItem.CreatedAt, 30*time.Millisecond)
+	require.WithinDuration(t, item.UpdatedAt, dbItem.UpdatedAt, 30*time.Millisecond)
+	dbItem.CreatedAt = time.Time{}
+	dbItem.UpdatedAt = item.UpdatedAt
+	require.Equal(t, item, dbItem)
+
+	newName := "Test Model changed again"
+	updateModel = &model.Upsert{
+		PKId: item.Id,
+		Name: &newName,
+	}
+	txFnErr = txM.TxFn(bgCtx, func(ctx context.Context) error {
+		err = modelStore.Update(ctx, updateModel)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("test error")
+	})
+	require.NotNil(t, txFnErr, "TxFn should return error")
+	require.ErrorContains(t, txFnErr, "test error")
+
+	dbItem = &model.Select{Id: item.Id}
+	found, err = modelStore.Get(bgCtx, dbItem)
+	require.NoError(t, err)
+	require.True(t, found)
+	dbItem.CreatedAt = time.Time{}
+	dbItem.UpdatedAt = item.UpdatedAt
+	require.Equal(t, item, dbItem)
+
+	var noActive bool
+	err = modelStore.Con.QueryRow(bgCtx, `
+        select count(*) = 0 as no_active_tx
+        from pg_stat_activity
+        where state in ('idle in transaction', 'idle in transaction (aborted)')
+          and pid <> pg_backend_pid();
+    `).Scan(&noActive)
+	require.NoError(t, err)
+	require.True(t, noActive)
+}
