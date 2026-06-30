@@ -7,13 +7,13 @@ mobone упрощает CRUD-операции и списочные выборк
 
 Подходит для приложений, где нужно быстро собрать надежный слой доступа к данным с минимальным шаблонным кодом.
 
-- Мин. Требования: Go 1.24, pgx v5, squirrel.
+- Требования: Go 1.24, pgx v5, squirrel.
 - Рекомендуется использовать формат плейсхолдеров Dollar для PostgreSQL: StatementBuilder.PlaceholderFormat(squirrel.Dollar)
 
 ## Установка
 
 ```shell script
-go get github.com/rendau/mobone/v2
+go get github.com/mechta-market/mobone/v2
 ```
 
 
@@ -28,7 +28,7 @@ import (
 
   "github.com/Masterminds/squirrel"
   "github.com/jackc/pgx/v5/pgxpool"
-  "github.com/rendau/mobone/v2"
+  "github.com/mechta-market/mobone/v2"
 )
 
 func NewStore(pool *pgxpool.Pool) mobone.ModelStore {
@@ -63,6 +63,7 @@ mobone работает не с структурами напрямую, а с �
     - Exec(ctx, sql, args...) (pgconn.CommandTag, error)
     - Query(ctx, sql, args...) (pgx.Rows, error)
     - QueryRow(ctx, sql, args...) pgx.Row
+    - SendBatch(ctx, b *pgx.Batch) pgx.BatchResults
 
 - ListModelI
     - ListColumnMap() map[string]any — колонки для Select/Scan
@@ -95,10 +96,15 @@ mobone работает не с структурами напрямую, а с �
 ## ModelStore: операции
 
 - Create(ctx, m CreateModelI) error
+- CreateMany(ctx, models []CreateModelI) error — батч INSERT через pgx.Batch
 - Update(ctx, m UpdateModelI) error
+- UpdateMany(ctx, models []UpdateModelI) error — батч UPDATE через pgx.Batch
 - UpdateOrCreate(ctx, m UpdateCreateModelI) error — ON CONFLICT DO UPDATE
+- UpdateOrCreateMany(ctx, models []UpdateCreateModelI) error — батч upsert через pgx.Batch
 - CreateIfNotExist(ctx, m UpdateCreateModelI) error — ON CONFLICT DO NOTHING
+- CreateIfNotExistMany(ctx, models []UpdateCreateModelI) error — батч insert-if-not-exist через pgx.Batch
 - Delete(ctx, m DeleteModelI) error
+- DeleteMany(ctx, models []DeleteModelI) error — батч DELETE через pgx.Batch
 - Get(ctx, m GetModelI) (found bool, err error)
 - List(ctx, params ListParams, itemConstructor func(add bool) ListModelI) (totalCount int64, err error)
 
@@ -262,6 +268,18 @@ upd := &ItemUpsert{
 err := store.Update(ctx, upd)
 ```
 
+### UpdateMany
+
+```textmate
+// Go
+name := "Updated 1"
+flag := true
+err := store.UpdateMany(ctx, []mobone.UpdateModelI{
+  &ItemUpsert{PKId: id1, Name: &name}, // partial: обновится только name
+  &ItemUpsert{PKId: id2, Flag: &flag}, // partial: обновится только flag
+})
+```
+
 
 ### Delete
 
@@ -376,7 +394,7 @@ err := store.CreateIfNotExist(ctx, &ItemUpsert{
 
 ```textmate
 // Go
-import "github.com/rendau/mobone/v2/tools"
+import "github.com/mechta-market/mobone/v2/tools"
 
 allowed := map[string]string{
   "name": "user_name",

@@ -159,6 +159,102 @@ func TestCreate(t *testing.T) {
 	require.Equal(t, item, dbItem)
 }
 
+func TestCreateMany(t *testing.T) {
+	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	modelStore := mobone.ModelStore{
+		Con:       dbCon.pool,
+		QB:        queryBuilder,
+		TableName: tableName,
+	}
+
+	name1 := "Test Model 1"
+	flag1 := true
+	createModel1 := &model.Upsert{
+		Name: &name1,
+		Flag: &flag1,
+	}
+
+	name2 := "Test Model 2"
+	flag2 := false
+	createModel2 := &model.Upsert{
+		Name: &name2,
+		Flag: &flag2,
+	}
+
+	err = modelStore.CreateMany(ctx, []mobone.CreateModelI{
+		createModel1,
+		createModel2,
+	})
+	require.NoError(t, err)
+	require.Greater(t, createModel1.PKId, 0)
+	require.Greater(t, createModel2.PKId, 0)
+	require.NotEqual(t, createModel1.PKId, createModel2.PKId)
+
+	dbItem1 := &model.Select{Id: createModel1.PKId}
+	found, err := modelStore.Get(ctx, dbItem1)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, name1, dbItem1.Name)
+	require.Equal(t, flag1, dbItem1.Flag)
+
+	dbItem2 := &model.Select{Id: createModel2.PKId}
+	found, err = modelStore.Get(ctx, dbItem2)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, name2, dbItem2.Name)
+	require.Equal(t, flag2, dbItem2.Flag)
+}
+
+func TestCreateIfNotExistMany(t *testing.T) {
+	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	modelStore := mobone.ModelStore{
+		Con:       dbCon.pool,
+		QB:        queryBuilder,
+		TableName: tableName,
+	}
+
+	existingName := "Existing"
+	err = modelStore.CreateIfNotExist(ctx, &model.Upsert{
+		PKId: 101,
+		Name: &existingName,
+	})
+	require.NoError(t, err)
+
+	existingNameIgnored := "Existing Changed"
+	newName := "New"
+	err = modelStore.CreateIfNotExistMany(ctx, []mobone.UpdateCreateModelI{
+		&model.Upsert{
+			PKId: 101,
+			Name: &existingNameIgnored,
+		},
+		&model.Upsert{
+			PKId: 102,
+			Name: &newName,
+		},
+	})
+	require.NoError(t, err)
+
+	dbItem := &model.Select{Id: 101}
+	found, err := modelStore.Get(ctx, dbItem)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, existingName, dbItem.Name)
+
+	dbItem = &model.Select{Id: 102}
+	found, err = modelStore.Get(ctx, dbItem)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, newName, dbItem.Name)
+}
+
 func TestUpdate(t *testing.T) {
 	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
 	require.NoError(t, err)
@@ -222,6 +318,211 @@ func TestUpdate(t *testing.T) {
 	dbItem.CreatedAt = time.Time{}
 	dbItem.UpdatedAt = item.UpdatedAt
 	require.Equal(t, item, dbItem)
+}
+
+func TestUpdateOrCreateMany(t *testing.T) {
+	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	modelStore := mobone.ModelStore{
+		Con:       dbCon.pool,
+		QB:        queryBuilder,
+		TableName: tableName,
+	}
+
+	initialName := "Initial"
+	err = modelStore.Create(ctx, &model.UpsertWithPK{
+		PKId: 201,
+		Name: &initialName,
+	})
+	require.NoError(t, err)
+
+	updatedName := "Updated"
+	createdName := "Created"
+	err = modelStore.UpdateOrCreateMany(ctx, []mobone.UpdateCreateModelI{
+		&model.UpsertWithPK{
+			PKId: 201,
+			Name: &updatedName,
+		},
+		&model.UpsertWithPK{
+			PKId: 202,
+			Name: &createdName,
+		},
+	})
+	require.NoError(t, err)
+
+	dbItem := &model.Select{Id: 201}
+	found, err := modelStore.Get(ctx, dbItem)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, updatedName, dbItem.Name)
+
+	dbItem = &model.Select{Id: 202}
+	found, err = modelStore.Get(ctx, dbItem)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, createdName, dbItem.Name)
+}
+
+func TestUpdateMany(t *testing.T) {
+	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	modelStore := mobone.ModelStore{
+		Con:       dbCon.pool,
+		QB:        queryBuilder,
+		TableName: tableName,
+	}
+
+	name1 := "Item 1"
+	flag1 := true
+	createModel1 := &model.Upsert{
+		Name: &name1,
+		Flag: &flag1,
+	}
+	err = modelStore.Create(ctx, createModel1)
+	require.NoError(t, err)
+
+	name2 := "Item 2"
+	flag2 := false
+	createModel2 := &model.Upsert{
+		Name: &name2,
+		Flag: &flag2,
+	}
+	err = modelStore.Create(ctx, createModel2)
+	require.NoError(t, err)
+
+	updatedName1 := "Item 1 updated"
+	updatedFlag2 := true
+
+	err = modelStore.UpdateMany(ctx, []mobone.UpdateModelI{
+		&model.Upsert{
+			PKId: createModel1.PKId,
+			Name: &updatedName1,
+		},
+		&model.Upsert{
+			PKId: createModel2.PKId,
+			Flag: &updatedFlag2,
+		},
+	})
+	require.NoError(t, err)
+
+	dbItem1 := &model.Select{Id: createModel1.PKId}
+	found, err := modelStore.Get(ctx, dbItem1)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, updatedName1, dbItem1.Name)
+	require.Equal(t, flag1, dbItem1.Flag)
+
+	dbItem2 := &model.Select{Id: createModel2.PKId}
+	found, err = modelStore.Get(ctx, dbItem2)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, name2, dbItem2.Name)
+	require.Equal(t, updatedFlag2, dbItem2.Flag)
+}
+
+func TestTransactionUpdateMany(t *testing.T) {
+	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
+	require.NoError(t, err)
+
+	bgCtx := context.Background()
+
+	txM := mobone.NewTransactionManager(dbCon.pool)
+
+	modelStore := mobone.ModelStore{
+		Con:                dbCon.pool,
+		TransactionManager: txM,
+		QB:                 queryBuilder,
+		TableName:          tableName,
+	}
+
+	name1 := "Tx Item 1"
+	flag1 := true
+	createModel1 := &model.Upsert{
+		Name: &name1,
+		Flag: &flag1,
+	}
+	err = modelStore.Create(bgCtx, createModel1)
+	require.NoError(t, err)
+
+	name2 := "Tx Item 2"
+	flag2 := false
+	createModel2 := &model.Upsert{
+		Name: &name2,
+		Flag: &flag2,
+	}
+	err = modelStore.Create(bgCtx, createModel2)
+	require.NoError(t, err)
+
+	updatedName1 := "Tx Item 1 updated"
+	updatedFlag2 := true
+	txFnErr := txM.TxFn(bgCtx, func(ctx context.Context) error {
+		return modelStore.UpdateMany(ctx, []mobone.UpdateModelI{
+			&model.Upsert{
+				PKId: createModel1.PKId,
+				Name: &updatedName1,
+			},
+			&model.Upsert{
+				PKId: createModel2.PKId,
+				Flag: &updatedFlag2,
+			},
+		})
+	})
+	require.NoError(t, txFnErr)
+
+	dbItem1 := &model.Select{Id: createModel1.PKId}
+	found, err := modelStore.Get(bgCtx, dbItem1)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, updatedName1, dbItem1.Name)
+	require.Equal(t, flag1, dbItem1.Flag)
+
+	dbItem2 := &model.Select{Id: createModel2.PKId}
+	found, err = modelStore.Get(bgCtx, dbItem2)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, name2, dbItem2.Name)
+	require.Equal(t, updatedFlag2, dbItem2.Flag)
+
+	rollbackName1 := "Tx Item 1 rolled back"
+	rollbackFlag2 := false
+	txFnErr = txM.TxFn(bgCtx, func(ctx context.Context) error {
+		err = modelStore.UpdateMany(ctx, []mobone.UpdateModelI{
+			&model.Upsert{
+				PKId: createModel1.PKId,
+				Name: &rollbackName1,
+			},
+			&model.Upsert{
+				PKId: createModel2.PKId,
+				Flag: &rollbackFlag2,
+			},
+		})
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("test error")
+	})
+	require.NotNil(t, txFnErr, "TxFn should return error")
+	require.ErrorContains(t, txFnErr, "test error")
+
+	dbItem1 = &model.Select{Id: createModel1.PKId}
+	found, err = modelStore.Get(bgCtx, dbItem1)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, updatedName1, dbItem1.Name)
+	require.Equal(t, flag1, dbItem1.Flag)
+
+	dbItem2 = &model.Select{Id: createModel2.PKId}
+	found, err = modelStore.Get(bgCtx, dbItem2)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, name2, dbItem2.Name)
+	require.Equal(t, updatedFlag2, dbItem2.Flag)
 }
 
 func TestList(t *testing.T) {
@@ -376,6 +677,43 @@ func TestDelete(t *testing.T) {
 
 	deleteModel := &model.Upsert{PKId: item.Id}
 	err = modelStore.Delete(ctx, deleteModel)
+	require.NoError(t, err)
+
+	listCount, err := modelStore.List(ctx, mobone.ListParams{
+		OnlyCount: true,
+	}, func(add bool) mobone.ListModelI {
+		return &model.Select{}
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, int(listCount))
+}
+
+func TestDeleteMany(t *testing.T) {
+	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	modelStore := mobone.ModelStore{
+		Con:       dbCon.pool,
+		QB:        queryBuilder,
+		TableName: tableName,
+	}
+
+	name1 := "Delete 1"
+	createModel1 := &model.Upsert{Name: &name1}
+	err = modelStore.Create(ctx, createModel1)
+	require.NoError(t, err)
+
+	name2 := "Delete 2"
+	createModel2 := &model.Upsert{Name: &name2}
+	err = modelStore.Create(ctx, createModel2)
+	require.NoError(t, err)
+
+	err = modelStore.DeleteMany(ctx, []mobone.DeleteModelI{
+		&model.Upsert{PKId: createModel1.PKId},
+		&model.Upsert{PKId: createModel2.PKId},
+	})
 	require.NoError(t, err)
 
 	listCount, err := modelStore.List(ctx, mobone.ListParams{
