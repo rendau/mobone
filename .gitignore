@@ -4,3 +4,4 @@
 *.tar.bz2
 .idea
 .pgpass
+.DS_Store
