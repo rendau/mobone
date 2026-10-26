@@ -13,7 +13,7 @@ mobone упрощает CRUD-операции и списочные выборк
 ## Установка
 
 ```shell script
-go get github.com/mechta-market/mobone/v2
+go get github.com/rendau/mobone/v2
 ```
 
 
@@ -28,7 +28,7 @@ import (
 
   "github.com/Masterminds/squirrel"
   "github.com/jackc/pgx/v5/pgxpool"
-  "github.com/mechta-market/mobone/v2"
+  "github.com/rendau/mobone/v2"
 )
 
 func NewStore(pool *pgxpool.Pool) mobone.ModelStore {
@@ -394,7 +394,7 @@ err := store.CreateIfNotExist(ctx, &ItemUpsert{
 
 ```textmate
 // Go
-import "github.com/mechta-market/mobone/v2/tools"
+import "github.com/rendau/mobone/v2/tools"
 
 allowed := map[string]string{
   "name": "user_name",

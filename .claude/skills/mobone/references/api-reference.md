@@ -1,6 +1,6 @@
 # mobone — справочник API
 
-`github.com/mechta-market/mobone/v2`. Здесь — точные сигнатуры, поведение генерации SQL и
+`github.com/rendau/mobone/v2`. Здесь — точные сигнатуры, поведение генерации SQL и
 особенности каждой операции (по исходникам).
 
 ## ModelStore

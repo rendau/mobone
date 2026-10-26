@@ -2,7 +2,7 @@
 name: mobone
 description: >
   Минималистичный слой доступа к PostgreSQL на Go поверх pgx/pgxpool + Masterminds/squirrel
-  (github.com/mechta-market/mobone/v2). Даёт generic CRUD через ModelStore и интерфейсы моделей
+  (github.com/rendau/mobone/v2). Даёт generic CRUD через ModelStore и интерфейсы моделей
   (ListModelI, GetModelI, CreateModelI, UpdateModelI, DeleteModelI, UpdateCreateModelI):
   Get/List с пагинацией, сортировкой и условиями; Create/Update/Delete и их батч-варианты
   (CreateMany/UpdateMany/DeleteMany через pgx.Batch); UpdateOrCreate (ON CONFLICT DO UPDATE),
@@ -17,13 +17,13 @@ description: >
 user-invocable: true
 license: MIT
 metadata:
-  author: mechta-market
+  author: rendau
   version: "1.0.0"
 ---
 
 # mobone — слой доступа к PostgreSQL (pgx + squirrel)
 
-`github.com/mechta-market/mobone/v2` — тонкий generic CRUD-слой. Работает **не со структурами
+`github.com/rendau/mobone/v2` — тонкий generic CRUD-слой. Работает **не со структурами
 напрямую, а с интерфейсами моделей**, которые отдают карты `имя_колонки → значение | указатель`.
 Это убирает рефлексию и шаблонный SQL, оставляя полный контроль над запросами через `squirrel`.
 
@@ -44,7 +44,7 @@ metadata:
 import (
     "github.com/Masterminds/squirrel"
     "github.com/jackc/pgx/v5/pgxpool"
-    "github.com/mechta-market/mobone/v2"
+    "github.com/rendau/mobone/v2"
 )
 
 qb := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar) // ВСЕГДА Dollar для PG
@@ -172,7 +172,7 @@ params := mobone.ListParams{
 неразрешённые поля игнорируются, пустой результат → `nil`.
 
 ```go
-import "github.com/mechta-market/mobone/v2/tools"
+import "github.com/rendau/mobone/v2/tools"
 
 allowed := map[string]string{"name": "user_name", "age": "user_age"}
 params.Sort = tools.ConstructSortColumns(allowed, []string{"-name", "age"})
