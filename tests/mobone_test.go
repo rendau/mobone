@@ -915,3 +915,70 @@ func TestTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, noActive)
 }
+
+// Вложенный TxFn работает в транзакции внешнего и не закрывает её: commit/rollback
+// делает только самый внешний вызов.
+func TestTransactionNested(t *testing.T) {
+	_, err := dbCon.pool.Exec(context.Background(), "truncate table "+tableName+" RESTART IDENTITY")
+	require.NoError(t, err)
+
+	bgCtx := context.Background()
+	txM := mobone.NewTransactionManager(dbCon.pool)
+
+	modelStore := mobone.ModelStore{
+		Con:                dbCon.pool,
+		TransactionManager: txM,
+		QB:                 queryBuilder,
+		TableName:          tableName,
+	}
+
+	count := func() int64 {
+		var n int64
+		err := dbCon.pool.QueryRow(bgCtx, "select count(*) from "+tableName).Scan(&n)
+		require.NoError(t, err)
+		return n
+	}
+
+	name1, name2 := "Nested 1", "Nested 2"
+
+	// внешний блок пишет после вложенного — транзакция должна быть ещё открыта
+	err = txM.TxFn(bgCtx, func(ctx context.Context) error {
+		err := txM.TxFn(ctx, func(ctx context.Context) error {
+			return modelStore.Create(ctx, &model.Upsert{Name: &name1})
+		})
+		if err != nil {
+			return err
+		}
+		// снаружи транзакции записи ещё не видно
+		require.EqualValues(t, 0, count())
+		return modelStore.Create(ctx, &model.Upsert{Name: &name2})
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, count())
+
+	// ошибка во внешнем блоке откатывает и то, что записал вложенный
+	err = txM.TxFn(bgCtx, func(ctx context.Context) error {
+		err := txM.TxFn(ctx, func(ctx context.Context) error {
+			return modelStore.Create(ctx, &model.Upsert{Name: &name1})
+		})
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("outer error")
+	})
+	require.ErrorContains(t, err, "outer error")
+	require.EqualValues(t, 2, count())
+
+	// ошибка во вложенном блоке доходит до внешнего и откатывает всё
+	err = txM.TxFn(bgCtx, func(ctx context.Context) error {
+		err := modelStore.Create(ctx, &model.Upsert{Name: &name2})
+		if err != nil {
+			return err
+		}
+		return txM.TxFn(ctx, func(ctx context.Context) error {
+			return fmt.Errorf("inner error")
+		})
+	})
+	require.ErrorContains(t, err, "inner error")
+	require.EqualValues(t, 2, count())
+}

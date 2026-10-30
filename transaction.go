@@ -56,9 +56,16 @@ func (s *TransactionManager) GetConnection(ctx context.Context) ConnectionI {
 	return s.con
 }
 
+// TxFn выполняет f в транзакции. Если в ctx уже есть транзакция (вложенный вызов TxFn),
+// f выполняется в ней, а commit/rollback делает только самый внешний TxFn: ошибка из
+// вложенного f доходит до него и откатывает всё целиком.
 func (s *TransactionManager) TxFn(ctx context.Context, f func(context.Context) error) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	if s.getContextTransaction(ctx) != nil {
+		return f(ctx)
 	}
 
 	ctxWithTx, tx, err := s.contextWithTransaction(ctx)
